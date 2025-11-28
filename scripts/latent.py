@@ -9,7 +9,7 @@ from scripts.regions import floatdef
 from scripts.attention import makerrandman
 
 from modules import launch_utils
-forge = launch_utils.git_tag()[0:2] == "f2"
+forge = launch_utils.git_tag()[0:2] == "f2" or launch_utils.git_tag() == "neo" 
 reforge = launch_utils.git_tag()[0:2] == "f1" or launch_utils.git_tag() == "classic"
 
 if forge:
