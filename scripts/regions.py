@@ -12,13 +12,15 @@ def lange(l):
     return range(len(l))
 
 # SBM Keywords and delimiters for region breaks, following matlab rules.
-# BREAK keyword is now passed through,  
+# BREAK keyword is now passed through,
 KEYROW = "ADDROW"
 KEYCOL = "ADDCOL"
 KEYBASE = "ADDBASE"
 KEYCOMM = "ADDCOMM"
 KEYBRK = "BREAK"
 KEYPROMPT = "ADDP"
+KEYRATIO = "ADDRATIO"
+KEYENABLE = "RPENABLE"
 DELIMROW = ";"
 DELIMCOL = ","
 MCOLOUR = 256
@@ -30,8 +32,8 @@ DKEYINOUT = { # Out/in, horizontal/vertical or row/col first.
 ("in",True): KEYROW,
 }
 
-ALLKEYS = [KEYCOMM,KEYROW, KEYCOL, KEYBASE, KEYPROMPT]
-ALLALLKEYS = [KEYCOMM,KEYROW, KEYCOL, KEYBASE, KEYPROMPT, KEYBRK, "AND"]
+ALLKEYS = [KEYCOMM,KEYROW, KEYCOL, KEYBASE, KEYPROMPT, KEYRATIO, KEYENABLE]
+ALLALLKEYS = [KEYCOMM,KEYROW, KEYCOL, KEYBASE, KEYPROMPT, KEYRATIO, KEYENABLE, KEYBRK, "AND"]
 
 fidentity = lambda x: x
 ffloatd = lambda c: (lambda x: floatdef(x,c))
@@ -347,15 +349,77 @@ def makeimgtmp(aratios,mode,usecom,usebase, flipper,ho,wo, options = [], image =
 fcountbrk = lambda x: x.count(KEYBRK)
 fint = lambda x: int(x)
 
+def extract_ratio_from_prompt(prompt):
+    """Extract ADDRATIO[...] from prompt and return (cleaned_prompt, extracted_ratios)"""
+    import re
+
+    # Look for ADDRATIO[ratios] pattern
+    ratio_pattern = r'ADDRATIO\[(.*?)\]'
+    match = re.search(ratio_pattern, prompt, re.IGNORECASE)
+
+    if match:
+        extracted_ratios = match.group(1).strip()
+        # Remove the ADDRATIO[...] from the prompt
+        cleaned_prompt = re.sub(ratio_pattern, '', prompt, flags=re.IGNORECASE).strip()
+        # Clean up any double spaces
+        cleaned_prompt = re.sub(r'\s+', ' ', cleaned_prompt)
+        return cleaned_prompt, extracted_ratios
+
+    return prompt, None
+
+def extract_rpenable_from_prompt(prompt):
+    """Extract RPENABLE[...] from prompt and return (cleaned_prompt, enable_settings)"""
+    import re
+
+    # Look for RPENABLE or RPENABLE[settings] pattern (word boundary to avoid partial matches)
+    enable_pattern = r'\bRPENABLE(?:\[(.*?)\])?'
+    match = re.search(enable_pattern, prompt, re.IGNORECASE)
+
+    if match:
+        settings_str = match.group(1) if match.group(1) else ""
+        # Remove the RPENABLE[...] from the prompt
+        cleaned_prompt = re.sub(enable_pattern, '', prompt, flags=re.IGNORECASE).strip()
+        # Clean up any double spaces
+        cleaned_prompt = re.sub(r'\s+', ' ', cleaned_prompt)
+
+        # Parse settings if provided
+        settings = {}
+        if settings_str:
+            # Split by comma and parse key=value pairs
+            for setting in settings_str.split(','):
+                setting = setting.strip()
+                if '=' in setting:
+                    key, value = setting.split('=', 1)
+                    settings[key.strip().lower()] = value.strip()
+                else:
+                    # Treat as mode setting if no = found
+                    if setting.lower() in ['matrix', 'mask', 'prompt', 'prompt-ex']:
+                        settings['mode'] = setting
+                    elif setting.lower() in ['attention', 'latent']:
+                        settings['calcmode'] = setting
+                    elif setting.lower() in ['horizontal', 'vertical', 'columns', 'rows']:
+                        settings['submode'] = setting
+
+        return cleaned_prompt, settings
+
+    return prompt, None
+
 def matrixdealer(self, p, aratios, bratios, mode):
     if "Ran" in mode:
         randdealer(self,p,aratios,bratios)
-        return 
+        return
     # The addrow/addcol syntax is better, cannot detect regular breaks without it.
-    # In any case, the preferred method will anchor the L2 structure. 
+    # In any case, the preferred method will anchor the L2 structure.
     # No prompt formatting is performed. Used only for region calculations
     prompt = p.prompt
     if self.optbreak:prompt = prompt.replace(KEYBRK, "")
+
+    # Extract ratios from prompt if present (overrides UI ratios)
+    prompt, extracted_ratios = extract_ratio_from_prompt(prompt)
+    if extracted_ratios:
+        aratios = extracted_ratios
+        if self.debug: print(f"Using ratios from prompt: {aratios}")
+
     if self.debug: print("in matrixdealer",prompt)
     if KEYCOMM in prompt: prompt = prompt.split(KEYCOMM,1)[1]
     if KEYBASE in prompt: prompt = prompt.split(KEYBASE,1)[1]
@@ -765,6 +829,16 @@ def create_canvas(h, w, indwipe = True):
 def inpaintmaskdealer(self, p, bratios, usebase, polymask):
     prompt = p.prompt
     if self.optbreak:prompt = prompt.replace(KEYBRK, "")
+
+    # Extract ratios and enable settings from prompt if present (though not used in mask mode)
+    prompt, extracted_ratios = extract_ratio_from_prompt(prompt)
+    if extracted_ratios and self.debug:
+        print(f"Note: ADDRATIO found in mask mode but not used: {extracted_ratios}")
+
+    prompt, rpenable_settings = extract_rpenable_from_prompt(prompt)
+    if rpenable_settings and self.debug:
+        print(f"Note: RPENABLE found in mask mode: {rpenable_settings}")
+
     if self.debug: print("in inpaintmaskdealer",prompt)
     if KEYCOMM in prompt: prompt = prompt.split(KEYCOMM,1)[1]
     if KEYBASE in prompt: prompt = prompt.split(KEYBASE,1)[1]

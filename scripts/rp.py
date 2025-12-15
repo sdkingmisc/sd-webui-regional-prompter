@@ -15,10 +15,10 @@ import json  # Presets.
 from json.decoder import JSONDecodeError
 from scripts.attention import (TOKENS, hook_forwards, reset_pmasks, savepmasks)
 from scripts.latent import (denoised_callback_s, denoiser_callback_s, lora_namer, setuploras, unloadlorafowards, forge_linear_forward)
-from scripts.regions import (MAXCOLREG, IDIM, KEYBRK, KEYBASE, KEYCOMM, KEYPROMPT, ALLKEYS, ALLALLKEYS,
+from scripts.regions import (MAXCOLREG, IDIM, KEYBRK, KEYBASE, KEYCOMM, KEYPROMPT, KEYRATIO, KEYENABLE, ALLKEYS, ALLALLKEYS,
                              create_canvas, draw_region, change_color,#detect_mask, detect_polygons,  
                              draw_image, save_mask, load_mask, changecs,
-                             floatdef, inpaintmaskdealer, makeimgtmp, matrixdealer)
+                             floatdef, inpaintmaskdealer, makeimgtmp, matrixdealer, extract_rpenable_from_prompt)
 from io import BytesIO
 import base64
 from packaging import version
@@ -494,6 +494,43 @@ class Script(modules.scripts.Script):
 
         tprompt = p.prompt[0] if type(p.prompt) == list else p.prompt
 
+        # Check for RPENABLE in prompt and extract settings
+        _, rpenable_settings = extract_rpenable_from_prompt(tprompt)
+        prompt_activation = rpenable_settings is not None
+
+        # Auto-activate if RPENABLE or ADDRATIO is found
+        auto_activate = prompt_activation or "ADDRATIO[" in tprompt.upper()
+
+        # Override settings from prompt if RPENABLE is present
+        if rpenable_settings:
+            if 'mode' in rpenable_settings:
+                mode_map = {
+                    'matrix': 'Matrix', 'mask': 'Mask',
+                    'prompt': 'Prompt', 'prompt-ex': 'Prompt-Ex'
+                }
+                rp_selected_tab = mode_map.get(rpenable_settings['mode'].lower(), rp_selected_tab)
+
+            if 'calcmode' in rpenable_settings:
+                calcmode_map = {'attention': 'Attention', 'latent': 'Latent'}
+                calcmode = calcmode_map.get(rpenable_settings['calcmode'].lower(), calcmode)
+
+            if 'submode' in rpenable_settings:
+                submode = rpenable_settings['submode'].lower()
+                if rp_selected_tab == 'Matrix':
+                    if submode in ['horizontal', 'rows']:
+                        mmode = 'Horizontal'
+                    elif submode in ['vertical', 'columns']:
+                        mmode = 'Vertical'
+
+            if 'usebase' in rpenable_settings:
+                usebase = rpenable_settings['usebase'].lower() in ['true', '1', 'yes']
+
+            if 'usecom' in rpenable_settings:
+                usecom = rpenable_settings['usecom'].lower() in ['true', '1', 'yes']
+
+            if debug:
+                print(f"RPENABLE settings applied: {rpenable_settings}")
+
         if hasattr(p,"rps_diff"):
             if p.rps_diff:
                 active = True
@@ -506,13 +543,20 @@ class Script(modules.scripts.Script):
                     if p.threshold is not None:threshold = str(p.threshold)
         else:
             diff = False
-        
+
         if forge:
             from backend.args import dynamic_args
             self.orig_online_lora = dynamic_args["online_lora"]
 
-        if not any(key in tprompt for key in ALLALLKEYS) or not active:
+        # Modified activation check: activate if UI is enabled OR prompt requests it
+        if not any(key in tprompt for key in ALLALLKEYS) or not (active or auto_activate):
             return unloader(self,p)
+
+        # Update active state for metadata
+        if auto_activate and not active:
+            active = True
+            if debug:
+                print("Regional Prompter auto-activated by prompt")
 
         p.extra_generation_params.update({
             "RP Active":active,
@@ -610,6 +654,7 @@ class Script(modules.scripts.Script):
         neighbor(self,p)                                                    #detect other extention
         if self.optbreak: allchanger(p,KEYBRK,KEYBRK_R)
         keyreplacer(self, p)                                                      #replace all keys to BREAK
+        ratiocleaner(self, p)                                                     #remove ADDRATIO from all prompts
         blankdealer(self, p)                                               #add "_" if prompt of last region is blank
         commondealer(p, self.usecom, self.usencom, flip_prompt)          #add commom prompt to all region
         if "La" in self.calc: allchanger(p, KEYBRK,"AND")      #replace BREAK to AND in Latent mode
@@ -1269,16 +1314,38 @@ def keyreplacer(self,p):
     p.all_prompt and p.all_negative_prompt
     '''
     for key in ALLKEYS:
+        # Skip ADDRATIO and RPENABLE as they're handled during extraction
+        if key in [KEYRATIO, KEYENABLE]:
+            continue
         for i in lange(p.all_prompts):
             p.all_prompts[i]= p.all_prompts[i].replace(key,KEYBRK)
-        
+
         for i in lange(p.all_negative_prompts):
             p.all_negative_prompts[i] = p.all_negative_prompts[i].replace(key,KEYBRK)
+
+def ratiocleaner(self, p):
+    '''
+    remove ADDRATIO[...] and RPENABLE[...] from all prompts after extraction
+    '''
+    import re
+    from scripts.regions import extract_ratio_from_prompt, extract_rpenable_from_prompt
+
+    for i in lange(p.all_prompts):
+        p.all_prompts[i], _ = extract_ratio_from_prompt(p.all_prompts[i])
+        p.all_prompts[i], _ = extract_rpenable_from_prompt(p.all_prompts[i])
+
+    for i in lange(p.all_negative_prompts):
+        p.all_negative_prompts[i], _ = extract_ratio_from_prompt(p.all_negative_prompts[i])
+        p.all_negative_prompts[i], _ = extract_rpenable_from_prompt(p.all_negative_prompts[i])
 
 def keycounter(self, p):
     keys = ALLALLKEYS.copy()
     if self.optbreak:
         keys.remove(KEYBRK)
+    # Remove ADDRATIO and RPENABLE from counting as they get processed and removed
+    for key_to_remove in [KEYRATIO, KEYENABLE]:
+        if key_to_remove in keys:
+            keys.remove(key_to_remove)
     pc = sum([p.prompt.count(text) for text in keys])
     npc = sum([p.negative_prompt.count(text) for text in keys])
     self.divide = [pc, npc]
